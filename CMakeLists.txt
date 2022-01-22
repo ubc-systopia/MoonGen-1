@@ -35,6 +35,7 @@ set(files
 
 set(libraries
 	-Wl,--whole-archive
+  -Wl,--disable-new-dtags
 	moon
 )
 
