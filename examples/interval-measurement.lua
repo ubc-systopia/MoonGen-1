@@ -117,7 +117,6 @@ function timerSlave(txQueue, rxQueue, size, flows)
 		size = 84
 	end
 	local timestamper = ts:newUdpTimestamper(txQueue, rxQueue)
-	local hist = hist:new()
 	mg.sleepMillis(1000) -- ensure that the load task is running
 	local counter = 0
 	local rateLimit = timer:new(0.001)
@@ -139,14 +138,11 @@ function timerSlave(txQueue, rxQueue, size, flows)
         end
      end
        
-    hist:update(timestamp_result[1])
 		rateLimit:wait()
 		rateLimit:reset()
 	end
   filewrite:close()
 	-- print the latency stats after all the other stuff
 	mg.sleepMillis(300)
-	hist:print()
-	hist:save("histogram.csv")
 end
 
