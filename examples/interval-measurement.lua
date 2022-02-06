@@ -28,8 +28,10 @@ function configure(parser)
 	parser:description("Generates UDP traffic and measure latencies. Edit the source to modify constants like IPs.")
 	parser:argument("txDev", "Device to transmit from."):convert(tonumber)
 	parser:argument("rxDev", "Device to receive from."):convert(tonumber)
+  parser:argument("logs", "The directory of the log of timing data.")
 	parser:option("-r --rate", "Transmit rate in Mbit/s."):default(10000):convert(tonumber)
 	parser:option("-f --flows", "Number of flows (randomized source IP)."):default(4):convert(tonumber)
+
 end
 
 local size = 128
@@ -49,7 +51,7 @@ function master(args)
   --
   -- Here the point at which they sapareted queues for data, timestamping packets, and arp respectievly.
 	mg.startTask("loadSlave", txDev:getTxQueue(0), rxDev:getRxQueue(0), size, args.flows)
-	mg.startTask("timerSlave", txDev:getTxQueue(1), rxDev:getRxQueue(1), size, args.flows)
+	mg.startTask("timerSlave", txDev:getTxQueue(1), rxDev:getRxQueue(1), size, args.flows, args.logs)
 	arp.startArpTask{
 		-- run ARP on both ports
 		{ rxQueue = rxDev:getRxQueue(2), txQueue = rxDev:getTxQueue(2), ips = RX_IP },
@@ -110,7 +112,7 @@ function loadSlave(queue, rxDev, size, flows)
 	rxCtr:finalize()
 end
 
-function timerSlave(txQueue, rxQueue, size, flows)
+function timerSlave(txQueue, rxQueue, size, flows, logs)
 	doArp()
 	if size < 84 then
 		log:warn("Packet size %d is smaller than minimum timestamp size 84. Timestamped packets will be larger than load packets.", size)
@@ -121,7 +123,7 @@ function timerSlave(txQueue, rxQueue, size, flows)
 	local counter = 0
 	local rateLimit = timer:new(0.001)
 	local baseIP = parseIPAddress(SRC_IP_BASE)
-  local filewrite = io.open("/home/asabzi/data/3-exp/10G-NIC/l3/latencies.txt", "w") 
+  local filewrite = io.open(logs, "w") 
 	while mg.running() do
     local timestamp_result = timestamper:measureLatency(size, function(buf)
                                                                 fillUdpPacket(buf, size)
