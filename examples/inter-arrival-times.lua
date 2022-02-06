@@ -1,4 +1,4 @@
-local dpdk		= require "dpdk"
+local mg		= require "moongen"
 local memory	= require "memory"
 local device	= require "device"
 local ts		= require "timestamping"
@@ -18,7 +18,7 @@ function master(rxPort, waitTime)
 	local bufs = memory.createBufArray()
 	local times = {}
 	local timer = timer:new(waitTime)
-	while dpdk.running() do
+	while mg.running() do
 		local n = queue:recv(bufs)
 		for i = 1, n do
 			if timer:expired() then
