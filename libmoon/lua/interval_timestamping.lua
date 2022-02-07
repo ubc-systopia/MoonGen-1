@@ -11,7 +11,7 @@ local timer  = require "timer"
 local log    = require "log"
 local filter = require "filter"
 local libmoon = require "libmoon"
-
+local stats = require 
 local timestamper = {}
 timestamper.__index = timestamper
 
@@ -33,12 +33,17 @@ function mod:newTimestamper(txQueue, rxQueue, mem, udp, doNotConfigureUdpPort)
 	end)
 	txQueue:enableTimestamps()
 	rxQueue:enableTimestamps()
+ 
+  -- TODO: adding stat fucntion to keep track of data transmitted.
+  --  txCtr = stats:newDevTxCounter(h 
+
+
 	if udp and rxQueue.dev.supportsFdir then
 		rxQueue:filterUdpTimestamps()
 	elseif not udp then
 		rxQueue:filterL2Timestamps()
 	end
-	return setmetatable({
+  return setmetatable({
 		mem = mem,
 		txBufs = mem:bufArray(1),
 		rxBufs = mem:bufArray(128),
@@ -67,10 +72,23 @@ function timestamper:measureLatency(pktSize, packetModifier, maxWait)
 		return self:measureLatency(nil, pktSize, packetModifier)
 	end
 	pktSize = pktSize or self.udp and 76 or 60
+  -- Amir: Time we wait until receive a response or declare packet as a lost packet.
 	maxWait = (maxWait or 15) / 1000
+
+  -- Amir: Allocating memory with size of one packet to transmit.
 	self.txBufs:alloc(pktSize)
 	local buf = self.txBufs[1]
+
+
+  -- Amir: This function works with dpdk to enable ieee 1588 which is a protocol for timming measurements available on the nic.
+  -- function pkt:enableTimestamps()
+	--   self.ol_flags = bit.bor(self.ol_flags, dpdk.PKT_TX_IEEE1588_TMST)
+  -- end
 	buf:enableTimestamps()
+
+
+  -- Amir: The measureLatency function is a method for timestamper class. Here we just update the sequence number for the 
+  -- whole class.
 	local expectedSeq = self.seq
 	self.seq = (self.seq + 1) % 2^16
 	if self.udp then
@@ -78,10 +96,15 @@ function timestamper:measureLatency(pktSize, packetModifier, maxWait)
 	else
 		buf:getPtpPacket().ptp:setSequenceID(expectedSeq)
 	end
+
+  -- Amir: The packet modifier is a callback function passed to the this function if we want to modify timestamping packet before
+  -- seding it out.
 	local skipReconfigure
 	if packetModifier then
 		skipReconfigure = packetModifier(buf)
 	end
+
+  -- Amir: seems to be regular checking. 
 	if self.udp then
 		if not self.doNotConfigureUdpPort then
 			-- change timestamped UDP port as each packet may be on a different port
@@ -96,18 +119,40 @@ function timestamper:measureLatency(pktSize, packetModifier, maxWait)
 			self.rxQueue.dev:reconfigureUdpTimestampFilter(self.rxQueue, buf:getUdpPacket())
 		end
 	end
+
+  -- Amir: It is the resynchronization procedure they mentioned in the paper. It's been done using dpdk functionalities. 
 	mod.syncClocks(self.txDev, self.rxDev)
+
 	-- clear any "leftover" timestamps
 	self.rxDev:clearTimestamps()
+
+  -- Amir: here we just send one packet. Becaues the size of txBufs is determined as one in the timestamper metatable.
 	self.txQueue:send(self.txBufs)
+  -- TODO: I added stat records here to maintain information about amount of data that is send through this queue.
+  --self.txCtr:update()
+  --self.rxCtr:update()
+
+
+
+  -- Amir: The function description says: "Read a TX timestamp from the device". However it actually uses the following call to the
+  -- DPDK to make it available:
+  -- dpdkc.rte_eth_timesync_read_tx_timestamp(self.id, ts)
+  -- The input of this function is amount of time ,in milissecond, it waits for function to be run (i.e. timestamp packet).
 	local tx = self.txQueue:getTimestamp(500)
 	local numPkts = 0
 	if tx then
 		-- sent was successful, try to get the packet back (assume that it is lost after a given delay)
 		local timer = timer:new(maxWait)
+
+    -- Amir: This is the time the code waits to receive a response from the receiver. This is not the same as previous timer...
 		while timer:running() do
+
+      -- Amir: It waits for 1000 ms to receive something. it uses dpdk calls to pull NIC queues.
+      -- It doesn't make sense for me why we might have receive more than one packet when we only have sent one timestampped packet.
 			local rx = self.rxQueue:tryRecv(self.rxBufs, 1000)
 			numPkts = numPkts + rx
+      
+      -- Amir: Check whether the NIC has time stamp or not... 
 			local timestampedPkt = self.rxDev:hasRxTimestamp()
 			if not timestampedPkt then
 				-- NIC didn't save a timestamp yet, just throw away the packets
