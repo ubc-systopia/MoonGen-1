@@ -1,6 +1,8 @@
 local mg     = require "moongen"
 local memory = require "memory"
 local device = require "device"
+
+-- Amir: Instead of timestamping, I'm using another library called "interval_timestamping.lua". Currently they are the same but the second one return three values: (latency, tx, rx).   
 local ts     = require "interval_timestamping"
 local filter = require "filter"
 local hist   = require "histogram"
@@ -25,38 +27,30 @@ local GW_IP		= DST_IP
 local ARP_IP	= SRC_IP_BASE
 
 function configure(parser)
-	parser:description("Generates UDP traffic and measure latencies. Edit the source to modify constants like IPs.")
+  parser:description("Generate Timestamped UDP traffic. Then try to measure interval time of consecutive packets.jkk")
 	parser:argument("txDev", "Device to transmit from."):convert(tonumber)
 	parser:argument("rxDev", "Device to receive from."):convert(tonumber)
   parser:argument("logs", "The directory of the log of timing data.")
 	parser:option("-r --rate", "Transmit rate in Mbit/s."):default(10000):convert(tonumber)
-	parser:option("-f --flows", "Number of flows (randomized source IP)."):default(4):convert(tonumber)
-
 end
-
+-- Amir: I fixed the packet size for this code.
 local size = 128
 function master(args)
   -- Here they just named the rx and tx. There is no distinguishing configuration here.
-	txDev = device.config{port = args.txDev, rxQueues = 3, txQueues = 3}
-	rxDev = device.config{port = args.rxDev, rxQueues = 3, txQueues = 3}
+	txDev = device.config{port = args.txDev, rxQueues = 2, txQueues = 2}
+	rxDev = device.config{port = args.rxDev, rxQueues = 2, txQueues = 2}
 	device.waitForLinks()
-	-- max 1kpps timestamping traffic timestamping
-	-- rate will be somewhat off for high-latency links at low rates
-	if args.rate > 0 then
-		txDev:getTxQueue(0):setRate(args.rate - (size + 4) * 8 / 1000)
-  end
-  -- TODO: Why did they only call slave for the TX side?
-  ---- It makes sense because we need to send packets with slave. However, in l2-load-latency.lua they established two 
-  ---- two sapareted queue just for transmit!
-  --
+	-- max 1kpps timestamping traffic timestamping. Amir: why?
+  txDev:getTxQueue(0):setRate(args.rate)
+  -- Amir: TODO: Why did they only call slave for the TX side?
+  
   -- Here the point at which they sapareted queues for data, timestamping packets, and arp respectievly.
-	mg.startTask("loadSlave", txDev:getTxQueue(0), rxDev:getRxQueue(0), size, args.flows)
-	mg.startTask("timerSlave", txDev:getTxQueue(1), rxDev:getRxQueue(1), size, args.flows, args.logs)
+	mg.startTask("timerSlave", txDev:getTxQueue(0), rxDev:getRxQueue(0), size, args.flows, args.logs)
 	arp.startArpTask{
 		-- run ARP on both ports
-		{ rxQueue = rxDev:getRxQueue(2), txQueue = rxDev:getTxQueue(2), ips = RX_IP },
+		{ rxQueue = rxDev:getRxQueue(1), txQueue = rxDev:getTxQueue(1), ips = RX_IP },
 		-- we need an IP address to do ARP requests on this interface
-		{ rxQueue = txDev:getRxQueue(2), txQueue = txDev:getTxQueue(2), ips = ARP_IP }
+		{ rxQueue = txDev:getRxQueue(1), txQueue = txDev:getTxQueue(1), ips = ARP_IP }
 	}
 	mg.waitForTasks()
 end
@@ -80,36 +74,9 @@ local function doArp()
 		if not DST_MAC then
 			log:info("ARP lookup failed, using default destination mac address")
 			return
-		end
+t	end
 	end
 	log:info("Destination mac: %s", DST_MAC)
-end
-
-function loadSlave(queue, rxDev, size, flows)
-	doArp()
-	local mempool = memory.createMemPool(function(buf)
-		fillUdpPacket(buf, size)
-	end)
-	local bufs = mempool:bufArray()
-	local counter = 0
-	local txCtr = stats:newDevTxCounter(queue, "plain")
-	local rxCtr = stats:newDevRxCounter(rxDev, "plain")
-	local baseIP = parseIPAddress(SRC_IP_BASE)
-	while mg.running() do
-		bufs:alloc(size)
-		for i, buf in ipairs(bufs) do
-			local pkt = buf:getUdpPacket()
-			pkt.ip4.src:set(baseIP + counter)
-			counter = incAndWrap(counter, flows)
-		end
-		-- UDP checksums are optional, so using just IPv4 checksums would be sufficient here
-		bufs:offloadUdpChecksums()
-		queue:send(bufs)
-		txCtr:update()
-		rxCtr:update()
-	end
-	txCtr:finalize()
-	rxCtr:finalize()
 end
 
 function timerSlave(txQueue, rxQueue, size, flows, logs)
@@ -118,19 +85,23 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
 		log:warn("Packet size %d is smaller than minimum timestamp size 84. Timestamped packets will be larger than load packets.", size)
 		size = 84
 	end
-	local timestamper = ts:newUdpTimestamper(txQueue, rxQueue)
+
+  -- Amir: Create an object of timestamper class. Then, inside the loop, we use measureLatancy method to calculate timestamps for each
+  -- packet. 
+ 	local timestamper = ts:newUdpTimestamper(txQueue, rxQueue)
 	mg.sleepMillis(1000) -- ensure that the load task is running
-	local counter = 0
-	local rateLimit = timer:new(0.001)
 	local baseIP = parseIPAddress(SRC_IP_BASE)
   local filewrite = io.open(logs, "w") 
+  local txCtr = stats:newDevTxCounter(txQueue, "plain")
+	local rxCtr = stats:newDevRxCounter(rxQueue, "plain")
 	while mg.running() do
     local timestamp_result = timestamper:measureLatency(size, function(buf)
                                                                 fillUdpPacket(buf, size)
                                                                 local pkt = buf:getUdpPacket()
-                                                                pkt.ip4.src:set(baseIP + counter)
-                                                                counter = incAndWrap(counter, flows)
+                                                                pkt.ip4.src:set(baseIP)
                                                               end)
+
+    -- Amir: I got rid of histogram, and store data in the raw format.
     for i,element in ipairs(timestamp_result) do                                                        
        filewrite:write(element)
        if (i==3) then
@@ -139,12 +110,12 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
           filewrite:write(", ")
         end
      end
-       
-		rateLimit:wait()
-		rateLimit:reset()
+     -- Amir: To measure the rate of timestamped traffic.    
+     txCtr:update()
+     rxCtr:update()
 	end
+  txCtr:finalize()
+  rxCtr:finalize()
   filewrite:close()
-	-- print the latency stats after all the other stuff
-	mg.sleepMillis(300)
 end
 
