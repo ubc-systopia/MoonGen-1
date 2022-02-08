@@ -4,6 +4,8 @@ local device = require "device"
 
 -- Amir: Instead of timestamping, I'm using another library called "interval_timestamping.lua". Currently they are the same but the second one return three values: (latency, tx, rx).   
 local ts     = require "interval_timestamping"
+
+local libmoon = require "libmoon"
 local filter = require "filter"
 local hist   = require "histogram"
 local stats  = require "stats"
@@ -94,17 +96,22 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
   local filewrite = io.open(logs, "w") 
   local txCtr = stats:newDevTxCounter(txQueue, "plain")
 	local rxCtr = stats:newDevRxCounter(rxQueue, "plain")
+  local start, stop, duration
 	while mg.running() do
+    start = libmoon.getTime() 
     local timestamp_result = timestamper:measureLatency(size, function(buf)
                                                                 fillUdpPacket(buf, size)
                                                                 local pkt = buf:getUdpPacket()
                                                                 pkt.ip4.src:set(baseIP)
                                                               end)
-
+    stop = libmoon.getTime()
+    duration = stop - start
     -- Amir: I got rid of histogram, and store data in the raw format.
     for i,element in ipairs(timestamp_result) do                                                        
        filewrite:write(element)
-       if (i==3) then
+       if (i==#timestamp_result) then
+          filewrite:write(", ") 
+          filewrite:write(duration)
           filewrite:write("\n")
        else
           filewrite:write(", ")

@@ -68,6 +68,8 @@ end
 --- @param packetModifier optional, a function that is called with the generated packet, e.g. to modified addresses
 --- @param maxWait optional (cannot be the only argument) the time in ms to wait before the packet is assumed to be lost (default = 15)
 function timestamper:measureLatency(pktSize, packetModifier, maxWait)
+  local start, stop, duration
+  start = libmoon.getTime()
 	if type(pktSize) == "function" then -- optional first argument was skipped
 		return self:measureLatency(nil, pktSize, packetModifier)
 	end
@@ -119,7 +121,10 @@ function timestamper:measureLatency(pktSize, packetModifier, maxWait)
 			self.rxQueue.dev:reconfigureUdpTimestampFilter(self.rxQueue, buf:getUdpPacket())
 		end
 	end
-
+  stop = libmoon.getTime()
+  duration = stop - start 
+  local block_1 = duration
+  start = libmoon.getTime() 
   -- Amir: It is the resynchronization procedure they mentioned in the paper. It's been done using dpdk functionalities. 
 	mod.syncClocks(self.txDev, self.rxDev)
 
@@ -145,8 +150,11 @@ function timestamper:measureLatency(pktSize, packetModifier, maxWait)
 		local timer = timer:new(maxWait)
 
     -- Amir: This is the time the code waits to receive a response from the receiver. This is not the same as previous timer...
-		while timer:running() do
-
+  stop = libmoon.getTime()
+  duration = stop - start  
+  local block_2 = duration
+  while timer:running() do
+      start = libmoon.getTime()
       -- Amir: It waits for 1000 ms to receive something. it uses dpdk calls to pull NIC queues.
       -- It doesn't make sense for me why we might have receive more than one packet when we only have sent one timestampped packet.
 			local rx = self.rxQueue:tryRecv(self.rxBufs, 1000)
@@ -171,8 +179,13 @@ function timestamper:measureLatency(pktSize, packetModifier, maxWait)
 							return nil, numPkts
 						end
 						self.rxBufs:freeAll()
+           
+            stop = libmoon.getTime()
+            duration =   stop - start 
+            local block_3 = duration
+
 						local lat_a = rxTs - tx
-            local lat = {lat_a, tx, rxTs}
+            local lat = {lat_a, tx, rxTs,block_1, block_2, block_3}
 						if lat_a > 0 and lat_a < 2 * maxWait * 10^9 then
 							-- negative latencies may happen if the link state changes
 							-- (timers depend on a clock that scales with link speed on some NICs)

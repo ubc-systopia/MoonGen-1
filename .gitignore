@@ -6,3 +6,6 @@ doc/html/
 *.log
 *.csv
 *.mscap
+csc/
+*.files
+*.out
