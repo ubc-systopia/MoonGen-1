@@ -39,8 +39,8 @@ end
 local size = 128
 function master(args)
   -- Here they just named the rx and tx. There is no distinguishing configuration here.
-	txDev = device.config{port = args.txDev, rxQueues = 2, txQueues = 2}
-	rxDev = device.config{port = args.rxDev, rxQueues = 2, txQueues = 2}
+	txDev = device.config{port = args.txDev, rxQueues = 1, txQueues = 2}
+	rxDev = device.config{port = args.rxDev, rxQueues = 2, txQueues = 1}
 	device.waitForLinks()
 	-- max 1kpps timestamping traffic timestamping. Amir: why?
   txDev:getTxQueue(0):setRate(args.rate)
@@ -50,9 +50,9 @@ function master(args)
 	mg.startTask("timerSlave", txDev:getTxQueue(0), rxDev:getRxQueue(0), size, args.flows, args.logs)
 	arp.startArpTask{
 		-- run ARP on both ports
-		{ rxQueue = rxDev:getRxQueue(1), txQueue = rxDev:getTxQueue(1), ips = RX_IP },
+		{ rxQueue = rxDev:getRxQueue(1), txQueue = rxDev:getTxQueue(0), ips = RX_IP },
 		-- we need an IP address to do ARP requests on this interface
-		{ rxQueue = txDev:getRxQueue(1), txQueue = txDev:getTxQueue(1), ips = ARP_IP }
+		{ rxQueue = txDev:getRxQueue(0), txQueue = txDev:getTxQueue(1), ips = ARP_IP }
 	}
 	mg.waitForTasks()
 end
@@ -97,6 +97,7 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
   local txCtr = stats:newDevTxCounter(txQueue, "plain")
 	local rxCtr = stats:newDevRxCounter(rxQueue, "plain")
   local start, stop, duration
+  local rateLimit = timer:new(0.1)
 	while mg.running() do
     start = libmoon.getTime() 
     local timestamp_result = timestamper:measureLatency(size, function(buf)
@@ -104,7 +105,10 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
                                                                 local pkt = buf:getUdpPacket()
                                                                 pkt.ip4.src:set(baseIP)
                                                               end)
-    stop = libmoon.getTime()
+                                                              
+    rateLimit:wait()
+    rateLimit:reset()
+	  stop = libmoon.getTime()
     duration = stop - start
     -- Amir: I got rid of histogram, and store data in the raw format.
     for i,element in ipairs(timestamp_result) do                                                        
@@ -120,7 +124,7 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
      -- Amir: To measure the rate of timestamped traffic.    
      txCtr:update()
      rxCtr:update()
-	end
+     end
   txCtr:finalize()
   rxCtr:finalize()
   filewrite:close()
