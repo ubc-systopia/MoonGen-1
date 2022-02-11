@@ -97,7 +97,7 @@ function timerSlave(txQueue, rxQueue, size, flows, logs)
   local txCtr = stats:newDevTxCounter(txQueue, "plain")
 	local rxCtr = stats:newDevRxCounter(rxQueue, "plain")
   local start, stop, duration
-  local rateLimit = timer:new(0.1)
+  local rateLimit = timer:new(0.01)
 	while mg.running() do
     start = libmoon.getTime() 
     local timestamp_result = timestamper:measureLatency(size, function(buf)
